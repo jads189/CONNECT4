@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect Four: Minimax and Alpha-Beta Visualizer</title>
+<style>
+  :root { --ink:#1a1a1a; --grey:#6b7280; --blue:#1d4e89; --red:#d62828; --yel:#f4c20d; --green:#2a9d4a; --line:#e5e7eb; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#fff; color:var(--ink); font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--grey); margin:0 0 16px; }
+  .layout { display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start; }
+  .left { flex:0 0 auto; max-width:100%; }
+  canvas { max-width:100%; height:auto; display:block; touch-action:manipulation; }
+  .right { flex:1 1 380px; min-width:300px; }
+  .controls { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; margin-bottom:12px; }
+  label { font-size:13px; color:var(--grey); display:flex; flex-direction:column; gap:3px; }
+  select, input[type=range], button { font:inherit; }
+  select { padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  button { padding:8px 14px; border:1px solid var(--ink); border-radius:8px; background:var(--ink); color:#fff; cursor:pointer; }
+  button.secondary { background:#fff; color:var(--ink); }
+  button:disabled { opacity:.5; cursor:default; }
+  #status { font-weight:600; font-size:17px; min-height:26px; margin:6px 0 10px; }
+  .panel { border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .panel h2 { font-size:15px; margin:0 0 2px; }
+  .hint { color:var(--grey); font-size:13px; margin:0 0 10px; }
+  .row { display:grid; grid-template-columns:28px 1fr 150px; align-items:center; gap:8px; padding:3px 6px; border-radius:6px; }
+  .row.best { background:#e8f5ec; outline:1.5px solid var(--green); }
+  .row .col { font-weight:700; text-align:center; }
+  .bar { position:relative; height:16px; }
+  .bar i { position:absolute; top:0; height:16px; display:block; }
+  .bar b { position:absolute; left:50%; top:-3px; width:1px; height:22px; background:#9ca3af; }
+  .val { font-size:13px; }
+  .row.best .val { font-weight:700; }
+  .stats { margin-top:10px; font-size:13px; color:var(--ink); }
+  table { border-collapse:collapse; width:100%; margin-top:8px; font-size:13px; }
+  th, td { text-align:right; padding:4px 8px; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--grey); font-weight:600; }
+  .note { color:var(--grey); font-size:12.5px; margin-top:8px; }
+  @media (prefers-color-scheme: dark) { /* page is intentionally kept white for screenshots in the report */ }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Connect Four: Minimax vs Alpha-Beta Pruning</h1>
+  <p class="sub">You play yellow (O). The AI plays red (X) and chooses its move with a depth-limited game-tree search. The panel shows the score it computed for every column.</p>
+
+  <div class="layout">
+    <div class="left">
+      <div class="controls">
+        <label>Who moves first
+          <select id="first"><option value="human">You</option><option value="ai">AI</option></select></label>
+        <label>Algorithm
+          <select id="algo">
+            <option value="abo">Alpha-beta + move ordering</option>
+            <option value="ab">Alpha-beta</option>
+            <option value="mm">Plain minimax</option>
+          </select></label>
+        <label><span>Search depth: <b id="depthLabel">5</b></span>
+          <input id="depth" type="range" min="1" max="8" value="5"></label>
+        <button id="newBtn">New game</button>
+      </div>
+      <div id="status">Your turn: click a column.</div>
+      <canvas id="cv" width="560" height="560"></canvas>
+    </div>
+
+    <div class="right">
+      <div class="panel">
+        <h2 id="thinkTitle">AI scores for each column</h2>
+        <p class="hint">For each column the AI tries the move, assumes you reply with your best move (MIN), replies with its best (MAX), and so on down to the depth limit. Higher score is better for the AI (X).</p>
+        <div id="rows"></div>
+        <div class="stats" id="stats">Make a move to see the AI's calculation.</div>
+      </div>
+
+      <div class="panel" style="margin-top:16px">
+        <h2>Compare the algorithms on this position</h2>
+        <p class="hint">Runs all three searches on the current board at the chosen depth (plain minimax is skipped above depth 6 to keep the page responsive).</p>
+        <button class="secondary" id="cmpBtn">Run comparison</button>
+        <div id="cmp"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const R = 6, C = 7, EMPTY = 0, X = 1, O = 2, WIN = 1000000;
+const ORDER = [3, 2, 4, 1, 5, 0, 6];
+const CELL = 80, TOP = 80;
+const RED = "#d62828", YEL = "#f4c20d", BLUE = "#1d4e89";
+
+/* ---------------- problem definition ---------------- */
+const newBoard = () => Array.from({length: R}, () => Array(C).fill(EMPTY));   // row 0 = bottom
+const legal = b => { const m = []; for (let c = 0; c < C; c++) if (b[R-1][c] === EMPTY) m.push(c); return m; };
+function drop(b, c, p) { for (let r = 0; r < R; r++) if (b[r][c] === EMPTY) { b[r][c] = p; return r; } return -1; }
+const undo = (b, r, c) => { b[r][c] = EMPTY; };
+function winLine(b, r, c, p) {                       // goal test around the last disc
+  for (const [dr, dc] of [[0,1],[1,0],[1,1],[1,-1]]) {
+    const cells = [[r, c]];
+    for (const s of [1, -1]) {
+      let rr = r + s*dr, cc = c + s*dc;
+      while (rr >= 0 && rr < R && cc >= 0 && cc < C && b[rr][cc] === p) { cells.push([rr, cc]); rr += s*dr; cc += s*dc; }
+    }
+    if (cells.length >= 4) return cells;
+  }
+  return null;
+}
+
+/* ---------------- heuristic evaluation (AI = X is MAX) ---------------- */
+function windowScore(m, o, e) { if (m === 3 && e === 1) return 5; if (m === 2 && e === 2) return 2; if (o === 3 && e === 1) return -4; return 0; }
+function evaluate(b) {
+  let s = 0;
+  for (let r = 0; r < R; r++) { if (b[r][3] === X) s += 3; else if (b[r][3] === O) s -= 3; }
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++)
+    for (const [dr, dc] of [[0,1],[1,0],[1,1],[1,-1]]) {
+      const er = r + 3*dr, ec = c + 3*dc;
+      if (er < 0 || er >= R || ec < 0 || ec >= C) continue;
+      let m = 0, o = 0, e = 0;
+      for (let i = 0; i < 4; i++) { const v = b[r + i*dr][c + i*dc]; if (v === X) m++; else if (v === O) o++; else e++; }
+      s += windowScore(m, o, e);
+    }
+  return s;
+}
+
+/* ---------------- search ---------------- */
+function minimax(b, depth, max, last, st) {
+  st.nodes++;
+  if (last && winLine(b, last.r, last.c, last.p)) return max ? -(WIN + depth) : (WIN + depth);
+  const moves = legal(b);
+  if (!moves.length) return 0;
+  if (depth === 0) return evaluate(b);
+  let best = max ? -Infinity : Infinity;
+  for (const c of moves) {
+    const p = max ? X : O, r = drop(b, c, p);
+    const v = minimax(b, depth - 1, !max, {r, c, p}, st);
+    undo(b, r, c);
+    best = max ? Math.max(best, v) : Math.min(best, v);
+  }
+  return best;
+}
+function alphabeta(b, depth, alpha, beta, max, last, st, order) {
+  st.nodes++;
+  if (last && winLine(b, last.r, last.c, last.p)) return max ? -(WIN + depth) : (WIN + depth);
+  let moves = legal(b);
+  if (!moves.length) return 0;
+  if (depth === 0) return evaluate(b);
+  if (order) moves = ORDER.filter(c => moves.includes(c));
+  let best = max ? -Infinity : Infinity;
+  for (const c of moves) {
+    const p = max ? X : O, r = drop(b, c, p);
+    const v = alphabeta(b, depth - 1, alpha, beta, !max, {r, c, p}, st, order);
+    undo(b, r, c);
+    if (max) { best = Math.max(best, v); alpha = Math.max(alpha, best); }
+    else     { best = Math.min(best, v); beta  = Math.min(beta, best); }
+    if (alpha >= beta) { st.cutoffs++; break; }
+  }
+  return best;
+}
+/* score of one root move for X, searched with a full window so every column gets an exact value */
+function scoreColumn(b, c, depth, algo, st) {
+  const r = drop(b, c, X);
+  const last = {r, c, p: X};
+  const v = algo === "mm" ? minimax(b, depth - 1, false, last, st)
+                          : alphabeta(b, depth - 1, -Infinity, Infinity, false, last, st, algo === "abo");
+  undo(b, r, c);
+  return v;
+}
+function analyse(b, depth, algo) {
+  const t0 = performance.now(), scores = {}, nodes = {}, total = {nodes: 0, cutoffs: 0};
+  for (const c of ORDER) {
+    if (!legal(b).includes(c)) { scores[c] = null; continue; }
+    const st = {nodes: 0, cutoffs: 0};
+    scores[c] = scoreColumn(b, c, depth, algo, st);
+    nodes[c] = st.nodes; total.nodes += st.nodes; total.cutoffs += st.cutoffs;
+  }
+  let best = null;
+  for (const c of ORDER) if (scores[c] !== null && (best === null || scores[c] > scores[best])) best = c;
+  return {scores, nodes, best, total, ms: performance.now() - t0};
+}
+function rootSearch(b, depth, algo) {          // one search from the root, for the fair node-count comparison
+  const st = {nodes: 0, cutoffs: 0}, t0 = performance.now();
+  if (algo === "mm") minimax(b, depth, true, null, st);
+  else alphabeta(b, depth, -Infinity, Infinity, true, null, st, algo === "abo");
+  return {nodes: st.nodes, cutoffs: st.cutoffs, ms: performance.now() - t0};
+}
+
+/* ---------------- UI state ---------------- */
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+let board, turn, over, busy, hoverCol = 3, anim = null, winCells = null, lastMove = null;
+const $ = id => document.getElementById(id);
+
+function reset() {
+  board = newBoard(); over = false; busy = false; anim = null; winCells = null; lastMove = null;
+  turn = $("first").value === "human" ? O : X;
+  $("rows").innerHTML = ""; $("stats").textContent = "Make a move to see the AI's calculation."; $("cmp").innerHTML = "";
+  draw();
+  if (turn === X) aiMove(); else setStatus("Your turn: click a column.");
+}
+function setStatus(t) { $("status").textContent = t; }
+
+function draw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+  const disc = (x, y, p, ring) => {
+    ctx.beginPath(); ctx.arc(x, y, 32, 0, 7); ctx.fillStyle = p === X ? RED : YEL; ctx.fill();
+    ctx.fillStyle = p === X ? "#fff" : "#1a1a1a"; ctx.font = "bold 26px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(p === X ? "X" : "O", x, y + 1);
+    if (ring) { ctx.beginPath(); ctx.arc(x, y, 36, 0, 7); ctx.lineWidth = 4; ctx.strokeStyle = ring; ctx.stroke(); }
+  };
+  // hover preview for the human
+  if (!over && !busy && turn === O && !anim) { ctx.globalAlpha = .5; disc(hoverCol * CELL + CELL/2, TOP/2, O); ctx.globalAlpha = 1; }
+  // placed discs
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) if (board[r][c] !== EMPTY) {
+    if (anim && anim.r === r && anim.c === c) continue;
+    disc(c * CELL + CELL/2, TOP + (R - 1 - r) * CELL + CELL/2, board[r][c]);
+  }
+  if (anim) disc(anim.c * CELL + CELL/2, anim.y, anim.p);
+  // board overlay with holes
+  ctx.beginPath(); ctx.rect(0, TOP, C*CELL, R*CELL);
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) { ctx.moveTo(c*CELL + CELL/2 + 34, TOP + r*CELL + CELL/2); ctx.arc(c*CELL + CELL/2, TOP + r*CELL + CELL/2, 34, 0, 7); }
+  ctx.fillStyle = BLUE; ctx.fill("evenodd");
+  // last move ring and winning discs
+  if (lastMove && !anim) { const {r, c} = lastMove; ctx.beginPath(); ctx.arc(c*CELL + CELL/2, TOP + (R-1-r)*CELL + CELL/2, 36, 0, 7); ctx.lineWidth = 3; ctx.strokeStyle = "#1a1a1a"; ctx.stroke(); }
+  if (winCells) for (const [r, c] of winCells) { ctx.beginPath(); ctx.arc(c*CELL + CELL/2, TOP + (R-1-r)*CELL + CELL/2, 38, 0, 7); ctx.lineWidth = 5; ctx.strokeStyle = "#2a9d4a"; ctx.stroke(); }
+  ctx.fillStyle = "#6b7280"; ctx.font = "14px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let c = 0; c < C; c++) ctx.fillText(c, c*CELL + CELL/2, TOP + R*CELL + 4);
+}
+
+function animateDrop(c, r, p) {
+  return new Promise(res => {
+    const target = TOP + (R - 1 - r) * CELL + CELL/2;
+    anim = {c, r, p, y: TOP/2, v: 0};
+    (function step() {
+      anim.v += 1.6; anim.y += anim.v;
+      if (anim.y >= target) { anim = null; res(); draw(); return; }
+      draw(); requestAnimationFrame(step);
+    })();
+  });
+}
+
+async function place(c, p) {
+  const r = drop(board, c, p);         // the board is updated at once; the falling disc is drawn on top
+  await animateDrop(c, r, p);
+  lastMove = {r, c};
+  const line = winLine(board, r, c, p);
+  if (line) { winCells = line; over = true; setStatus(p === X ? "AI (red) wins: four in a row!" : "You win! Four in a row."); }
+  else if (!legal(board).length) { over = true; setStatus("Draw: the board is full."); }
+  draw();
+  return !over;
+}
+
+async function aiMove() {
+  busy = true; setStatus("AI is searching..."); draw();
+  await new Promise(r => setTimeout(r, 30));
+  const depth = +$("depth").value, algo = $("algo").value;
+  const res = analyse(board, depth, algo);
+  showAnalysis(res, depth, algo);
+  const cont = await place(res.best, X);
+  busy = false;
+  if (cont) { turn = O; setStatus("Your turn: click a column."); }
+  draw();
+}
+
+function fmt(v, depth) {
+  if (v >= WIN) { const p = depth - (v - WIN); return `WIN (forced, ${p} ${p === 1 ? "ply" : "plies"})`; }
+  if (v <= -WIN) { const p = depth - (-v - WIN); return `LOSS (forced, ${p} ${p === 1 ? "ply" : "plies"})`; }
+  return (v >= 0 ? "+" : "") + v;
+}
+function showAnalysis(res, depth, algo) {
+  const clip = 40, rows = [];
+  for (let c = 0; c < C; c++) {
+    const v = res.scores[c];
+    if (v === null) { rows.push(`<div class="row"><div class="col">${c}</div><div class="val" style="grid-column:2 / span 2;color:#6b7280">column full</div></div>`); continue; }
+    const big = Math.abs(v) >= WIN, len = Math.min(50, Math.abs(big ? clip : v) / clip * 50);
+    const color = v >= WIN ? "#2a9d4a" : v <= -WIN ? "#c1121f" : v >= 0 ? BLUE : "#8d99ae";
+    const style = v >= 0 ? `left:50%;width:${len}%` : `left:${50 - len}%;width:${len}%`;
+    rows.push(`<div class="row ${c === res.best ? "best" : ""}"><div class="col">${c}</div><div class="bar"><i style="${style};background:${color}"></i><b></b></div><div class="val">${fmt(v, depth)}</div></div>`);
+  }
+  $("rows").innerHTML = rows.join("");
+  const name = {abo: "alpha-beta + move ordering", ab: "alpha-beta", mm: "plain minimax"}[algo];
+  $("stats").innerHTML = `<b>AI chose column ${res.best}.</b> Algorithm: ${name}, depth ${depth}.<br>` +
+    `Positions searched for all 7 columns: <b>${res.total.nodes.toLocaleString()}</b> in ${res.ms.toFixed(0)} ms` +
+    (algo === "mm" ? "" : `, with ${res.total.cutoffs.toLocaleString()} alpha-beta cutoffs`) + ".";
+}
+
+/* ---------------- events ---------------- */
+function colFromEvent(e) {
+  const rect = cv.getBoundingClientRect(), x = (e.clientX - rect.left) * (cv.width / rect.width);
+  return Math.max(0, Math.min(C - 1, Math.floor(x / CELL)));
+}
+cv.addEventListener("mousemove", e => { hoverCol = colFromEvent(e); if (!anim) draw(); });
+cv.addEventListener("click", async e => {
+  if (over || busy || turn !== O) return;
+  const c = colFromEvent(e);
+  if (!legal(board).includes(c)) return;
+  busy = true;
+  const cont = await place(c, O);
+  busy = false;
+  if (cont) { turn = X; aiMove(); }
+});
+$("depth").addEventListener("input", () => { $("depthLabel").textContent = $("depth").value; });
+$("newBtn").addEventListener("click", reset);
+$("first").addEventListener("change", reset);
+
+$("cmpBtn").addEventListener("click", () => {
+  const depth = +$("depth").value, b = board.map(r => r.slice());
+  $("cmp").innerHTML = "<p class='hint'>Running...</p>";
+  setTimeout(() => {
+    const rows = [["Plain minimax", "mm"], ["Alpha-beta", "ab"], ["Alpha-beta + move ordering", "abo"]].map(([name, key]) => {
+      if (key === "mm" && depth > 6) return `<tr><td>${name}</td><td>skipped</td><td>-</td><td>-</td></tr>`;
+      const r = rootSearch(b, depth, key);
+      return `<tr><td>${name}</td><td>${r.nodes.toLocaleString()}</td><td>${key === "mm" ? "-" : r.cutoffs.toLocaleString()}</td><td>${r.ms.toFixed(0)} ms</td></tr>`;
+    }).join("");
+    $("cmp").innerHTML = `<table><tr><th>Algorithm (depth ${depth})</th><th>Nodes</th><th>Cutoffs</th><th>Time</th></tr>${rows}</table>` +
+      `<p class="note">All three choose the same move. Alpha-beta only skips branches that cannot change the result. Timings depend on your computer.</p>`;
+  }, 30);
+});
+
+reset();
+</script>
+</body>
+</html>
